@@ -1,0 +1,196 @@
+---
+name: 01- 🔥 دانلود فایل
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: '🔗 لینک های دانلود (با فاصله جدا کنید)'
+        required: true
+        type: string
+      mode:
+        description: '📦 حالت دانلود'
+        required: false
+        default: 'normal'
+        type: choice
+        options:
+          - normal
+          - zip
+      password:
+        description: '🔒 رمز عبور برای آرشیو (اختیاری)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  download:
+    name: "📥 دانلود فایل"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 rar unrar zip curl wget bc
+
+      - name: Configure Git
+        run: |
+          git config --global http.postBuffer 524288000
+          git config --global core.compression 0
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Run Downloader
+        env:
+          INPUT_URLS: ${{ github.event.inputs.urls }}
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+          INPUT_PASSWORD: ${{ github.event.inputs.password }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          python3 scripts/downloader.py
+
+      - name: Update main README
+        run: |
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
+          FORK_ZIP="${{ github.server_url }}/${{ github.repository }}/archive/refs/heads/${{ github.ref_name }}.zip"
+          HELP_MARKER="<!-- AVASAM_HELP -->"
+
+          if [ ! -f "README.md" ]; then
+            echo "# دانلودر فایل" > README.md
+            echo "" >> README.md
+          fi
+
+          # Remove old files section
+          sed -i '/## فایل های دانلود شده/,/^---$/d' README.md 2>/dev/null || true
+
+          # Build files section
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "## فایل های دانلود شده"
+            echo ""
+            for folder in downloads/*/; do
+              [ -d "$folder" ] || continue
+              NAME=$(basename "$folder")
+              echo "- [$NAME]($REPO_URL/$NAME)"
+            done
+            echo ""
+            echo "---"
+          } >> README.md
+
+          # Add help section only if not exists
+          if ! grep -q "$HELP_MARKER" README.md; then
+            {
+              echo ""
+              echo "$HELP_MARKER"
+              echo ""
+              echo "## 📦 دانلود همه فایل ها یکجا"
+              echo ""
+              echo "**[⬇️ دانلود کل مخزن به صورت ZIP]($FORK_ZIP)**"
+              echo ""
+              echo "---"
+              echo ""
+              echo "طراحی شده توسط [آواسام](https://avasam.ir) 💚"
+            } >> README.md
+          fi
+
+      - name: Commit and Push
+        run: |
+          BRANCH="${{ github.ref_name }}"
+
+          git add -A downloads/
+          git add README.md
+
+          if ! git diff --cached --quiet; then
+            git commit -m "📥 فایل های دانلود شده [skip ci]"
+
+            for i in 1 2 3 4 5; do
+              if git push origin HEAD:"$BRANCH"; then
+                echo "✅ Push successful!"
+                break
+              else
+                echo "Retry $i..."
+                sleep 3
+                git fetch origin "$BRANCH"
+                git rebase origin/"$BRANCH" || git rebase --abort
+              fi
+            done
+          fi
+
+      - name: Summary
+        run: |
+          FORK_ZIP="${{ github.server_url }}/${{ github.repository }}/archive/refs/heads/${{ github.ref_name }}.zip"
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}/raw/${{ github.ref_name }}/downloads"
+
+          cat >> $GITHUB_STEP_SUMMARY << 'HEADER'
+          <div align="center">
+
+          # ✅ دانلود کامل شد!
+
+          </div>
+
+          ---
+
+          <div dir="rtl">
+
+          ## لینک های دانلود
+
+          HEADER
+
+          for folder in downloads/*/; do
+            [ -d "$folder" ] || continue
+            NAME=$(basename "$folder")
+            ENCODED_NAME=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$NAME'))")
+
+            echo "### 📁 $NAME" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| فایل | لینک |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+
+            for file in "$folder"*; do
+              [ -f "$file" ] || continue
+              FILENAME=$(basename "$file")
+              [[ "$FILENAME" == "README.md" ]] && continue
+              ENCODED_FILE=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$FILENAME'))")
+              echo "| \`$FILENAME\` | [⬇️ دانلود]($REPO_URL/$ENCODED_NAME/$ENCODED_FILE) |" >> $GITHUB_STEP_SUMMARY
+            done
+            echo "" >> $GITHUB_STEP_SUMMARY
+          done
+
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ---
+
+          ## 📦 دانلود همه فایل ها یکجا
+
+          **[⬇️ دانلود کل مخزن به صورت ZIP]($FORK_ZIP)**
+
+          ---
+
+          ## نحوه استخراج
+
+          1. تمام پارت ها را دانلود کنید
+          2. فایل اصلی را با WinRAR باز کنید
+          3. Extract کنید
+
+          </div>
+
+          ---
+
+          طراحی شده توسط [آواسام](https://avasam.ir) 💚
+          EOF
